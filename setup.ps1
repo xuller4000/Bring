@@ -11,8 +11,8 @@ Write-Host "Installiere wrangler ..."
 npm install --silent
 if ($LASTEXITCODE -ne 0) { throw "npm install fehlgeschlagen" }
 
-npx wrangler whoami | Out-Null
-if ($LASTEXITCODE -ne 0) {
+$who = npx wrangler whoami | Out-String
+if ($LASTEXITCODE -ne 0 -or $who -match "not authenticated") {
     Write-Host "Bitte im Browser bei Cloudflare anmelden ..."
     npx wrangler login
     if ($LASTEXITCODE -ne 0) { throw "Cloudflare-Login fehlgeschlagen" }
