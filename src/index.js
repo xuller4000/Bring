@@ -51,11 +51,14 @@ class Bring {
 
   async request(method, path, body) {
     if (!session) await this.login();
+    const form = body instanceof URLSearchParams;
     const send = () =>
       fetch(`${API}${path}`, {
         method,
-        headers: body ? { ...session.headers, "Content-Type": "application/json" } : session.headers,
-        body: body ? JSON.stringify(body) : undefined,
+        headers: body
+          ? { ...session.headers, "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json" }
+          : session.headers,
+        body: body ? (form ? body.toString() : JSON.stringify(body)) : undefined,
       });
     let r = await send();
     if (r.status === 401) {
@@ -76,21 +79,40 @@ class Bring {
   async resolveList(name) {
     const lists = await this.lists();
     if (!name) return lists.find((l) => l.listUuid === session.defaultList) || lists[0];
-    const hit = lists.find((l) => l.name.trim().toLowerCase() === name.trim().toLowerCase());
+    // Exakter Treffer zuerst, da es Listen geben kann, die sich nur in der Schreibweise unterscheiden
+    const hit =
+      lists.find((l) => l.name.trim() === name.trim()) ||
+      lists.find((l) => l.name.trim().toLowerCase() === name.trim().toLowerCase());
     if (!hit) throw new Error(`Liste '${name}' nicht gefunden. Vorhanden: ${lists.map((l) => l.name).join(", ")}`);
     return hit;
   }
 
   async items(listUuid) {
-    return (await this.request("GET", `/bringlists/${listUuid}`)).items;
+    const d = (await this.request("GET", `/bringlists/${listUuid}`)) || {};
+    // Bring! liefert je nach Liste {items: {purchase, recently}} oder {purchase, recently} direkt,
+    // die Artikel mal mit itemId, mal mit name.
+    const src = d.items && typeof d.items === "object" ? d.items : d;
+    if (!Array.isArray(src.purchase) && !Array.isArray(src.recently)) {
+      throw new Error(`Unerwartete Antwort von Bring! fuer die Liste (Felder: ${Object.keys(d).join(", ") || "keine"})`);
+    }
+    const norm = (arr) =>
+      (Array.isArray(arr) ? arr : []).map((i) => ({
+        itemId: String(i.itemId ?? i.name ?? ""),
+        specification: i.specification ?? i.spec ?? "",
+        uuid: i.uuid,
+      }));
+    return { purchase: norm(src.purchase), recently: norm(src.recently) };
   }
 
+  // Artikel werden ueber den Namen angesprochen; die Listenantwort enthaelt nicht immer UUIDs,
+  // und Aenderungen mit unbekannter UUID ignoriert Bring! stillschweigend.
   async change(listUuid, changes) {
-    const geo = { accuracy: "0.0", altitude: "0.0", latitude: "0.0", longitude: "0.0" };
-    await this.request("PUT", `/bringlists/${listUuid}/items`, {
-      changes: changes.map((c) => ({ ...geo, ...c })),
-      sender: "",
-    });
+    const field = { TO_PURCHASE: "purchase", TO_RECENTLY: "recently", REMOVE: "remove" };
+    for (const c of changes) {
+      const form = { purchase: "", recently: "", remove: "", specification: c.spec || "", sender: "null" };
+      form[field[c.operation]] = c.itemId;
+      await this.request("PUT", `/bringlists/${listUuid}`, new URLSearchParams(form));
+    }
   }
 }
 
